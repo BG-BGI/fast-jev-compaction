@@ -9,6 +9,7 @@ import type {
 } from 'claude-code';
 
 import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
+import { redactingAsker } from '../src/redact.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
   CompactOptions,
@@ -87,9 +88,9 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   return config;
 }
 
-/** A `JevAsker` over the engine's `$.http.fetch`. */
+/** A redacting `JevAsker` over the engine's `$.http.fetch`. */
 export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): JevAsker {
-  return {
+  return redactingAsker({
     async ask(state, questions) {
       const request = buildJevRequest({ apiKey, model }, state, questions);
       const response = await fetchFn(request.url, {
@@ -99,7 +100,7 @@ export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): Jev
       });
       return parseJevResponse(response.status, response.ok, response.text);
     },
-  };
+  });
 }
 
 function toolUseSummary(tool: ToolUse): ToolUseSummary {

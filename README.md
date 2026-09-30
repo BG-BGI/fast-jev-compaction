@@ -115,6 +115,16 @@ put it in a source file.
 per-reason decision counts, the state size in estimated tokens, which fitting
 stage was needed, and the number of requests.
 
+## Redaction (BG-BGI fork)
+
+Every state and question is passed through `src/redact.ts` before it leaves the
+machine: API keys, GitHub/Slack/AWS tokens, JWTs, bearer tokens, `*_SECRET=`/
+`*_TOKEN=`/`password=` values, private key blocks, emails, and bare 32+ char
+hex/base64 runs become `[REDACTED]`. Ported from jev-kit `airlock/redact.py`.
+The hook always redacts; `compactMessages` does unless `redact: false`. This is
+pattern matching, not a guarantee: document prose, names and paths still go to
+Jev.
+
 ## Limitations
 
 - Only tool calls and results are candidates; text messages are never removed
