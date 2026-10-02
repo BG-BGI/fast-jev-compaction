@@ -34,6 +34,14 @@ For local development:
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .
 ```
 
+## Modes
+
+`hooks/fast-jev.ts` reads the `mode` option and registers
+`hooks/tool-call.ts` (`tool.call`, default), `hooks/session-compact.ts`
+(`session.compact` and `turn.complete`), or both. Shared transport and pure
+option helpers live in `hooks/shared.ts`; the key lookup stays in each hook
+file because the plugin validator does not follow `$` across imports.
+
 ## Configuration
 
 The plugin declares these `userConfig` values in

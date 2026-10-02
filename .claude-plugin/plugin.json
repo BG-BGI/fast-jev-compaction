@@ -1,9 +1,15 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.4.0",
-  "description": "Verbatim Jev-guided compaction of Bash, MCP and (opt-in) Read tool results before they enter Claude Code context.",
+  "version": "0.5.0",
+  "description": "Verbatim Jev-guided compaction for Claude Code: trims long Bash, MCP and (opt-in) Read results in a tool.call hook, and/or replaces the session summary in a session.compact hook.",
   "license": "MIT",
   "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Compaction mode",
+      "description": "tool: trim long tool results as they arrive (default). session: replace the built-in summary at compaction time and auto-compact. both: run both hooks.",
+      "default": "tool"
+    },
     "apiKey": {
       "type": "string",
       "title": "TypeSafe API key",
@@ -57,6 +63,30 @@
       "title": "Compact Read results",
       "description": "Also compact long Read results. Omitted lines become [...] placeholders so line numbers stay correct.",
       "default": false
+    },
+    "compactAtPercent": {
+      "type": "number",
+      "title": "Compaction percentage",
+      "description": "Session mode: context percentage at which turn.complete requests compaction.",
+      "default": 60
+    },
+    "preserveRecentMessages": {
+      "type": "number",
+      "title": "Recent messages to preserve",
+      "description": "Session mode: number of newest messages pinned from compaction.",
+      "default": 6
+    },
+    "maxRequestTokens": {
+      "type": "number",
+      "title": "Maximum Jev request tokens",
+      "description": "Session mode: estimated token budget for state plus questions in one Jev request.",
+      "default": 30000
+    },
+    "truncateHeadChars": {
+      "type": "number",
+      "title": "Truncated tool result head",
+      "description": "Session mode: characters of a tool result kept when Jev decides its full output is no longer needed; 0 keeps only the note.",
+      "default": 300
     }
   }
 }

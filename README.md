@@ -1,7 +1,7 @@
 # fast-jev-compaction
 
-Claude Code plugin that compacts Bash tool results before they enter context:
-a `tool.call` hook scores the line ranges of each long output against your
+Claude Code plugin with two compaction modes, selected by the `mode` option
+(`tool` by default, `session`, or `both`). In `tool` mode a `tool.call` hook scores the line ranges of each long output against your
 goal in one fast Jev request, omits the ranges that do not matter, and keeps
 everything else verbatim. The whole-transcript compactor is still available as
 an npm library.
@@ -137,6 +137,23 @@ Jev.
   ceiling costs one request per handful of questions.
 
 ## Claude Code plugin
+
+### Modes
+
+| `mode` | Hooks registered | What it does |
+| --- | --- | --- |
+| `tool` (default) | `tool.call` | Trims long Bash/MCP (and opt-in `Read`) results as they arrive. Sends one tool output at a time. |
+| `session` | `session.compact`, `turn.complete` | Replaces the built-in summary with whole-transcript compaction, and requests compaction at `compactAtPercent` (60) of the context window. Sends up to `maxStateTokens` of conversation state per request. |
+| `both` | all three | Tool results are trimmed on arrival, and the session compactor runs at the threshold. |
+
+Session-mode options: `compactAtPercent`, `preserveRecentMessages`,
+`maxRequestTokens`, `truncateHeadChars` (plus the shared `keepThreshold`,
+`maxStateTokens`, `minReductionRatio`). `maxStateTokens` defaults to 20000 in
+the plugin manifest, so the plugin passes that to the session compactor too;
+the library default is 25000. Session mode falls back to the built-in summary
+when Jev fails or the reduction is below `minReductionRatio`.
+
+The sections below describe `tool` mode.
 
 The repository root is a Claude Code function-hook plugin. `hooks/fast-jev.ts`
 registers one `tool.call` hook, instead of hooking `session.compact`. It covers
