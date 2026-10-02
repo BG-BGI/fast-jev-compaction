@@ -51,7 +51,7 @@ The plugin declares these `userConfig` values in
 | `model` | `jev-latest` |
 
 The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
-through `TYPESAFE_API_KEY`. The environment variable is the recommended
+through `TYPESAFE_API_KEY`, falling back to the `TYPESAFE_API_KEY=` line in jev-kit's `~/.config/jev-kit/env`. The environment variable is the recommended
 development setup. Each compacted or scored result logs a `decisions:` line
 (`first-last:keep|drop/probability`) and a size summary to the transcript.
 

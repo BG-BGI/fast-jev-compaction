@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { decisionLog, jevAsker, register, resolveHookConfig, summarize } from '../hooks/fast-jev.ts';
+import {
+  decisionLog,
+  jevAsker,
+  keyFromEnvFile,
+  register,
+  resolveHookConfig,
+  summarize,
+} from '../hooks/fast-jev.ts';
 import { compactToolResult } from '../src/index.js';
 
 const output = Array.from({ length: 100 }, (_, i) => `line ${i + 1} ${'x'.repeat(40)}`).join('\n');
@@ -197,5 +204,39 @@ describe('tool.call hook', () => {
     const out = await registered().handler(failing, { tool: 'Bash', command: 'x' }, async () => ran);
     expect(out).toBe(ran);
     expect(logs).toEqual([expect.stringContaining('Bash result passed through')]);
+  });
+});
+
+describe('api key lookup', () => {
+  it('parses the jev-kit env file', () => {
+    expect(keyFromEnvFile('# c\nTYPESAFE_API_KEY=abc123\n')).toBe('abc123');
+    expect(keyFromEnvFile('export TYPESAFE_API_KEY="q w"')).toBe('q w');
+    expect(keyFromEnvFile("TYPESAFE_API_KEY='k'")).toBe('k');
+    expect(keyFromEnvFile('OTHER=1')).toBeUndefined();
+    expect(keyFromEnvFile('TYPESAFE_API_KEY=')).toBeUndefined();
+  });
+
+  it('falls back to the kit file when env and settings have no key', async () => {
+    const reads: string[] = [];
+    const calls = { fetches: 0 };
+    const base = engine(() => 0.1, [], calls);
+    const noKey = {
+      ...base,
+      env: { get: async (name: string) => (name === 'HOME' ? '/home/u' : undefined) },
+      fs: {
+        read: async (path: string) => {
+          reads.push(path);
+          return 'TYPESAFE_API_KEY=from-file\n';
+        },
+      },
+    };
+    const out = (await registered({ chunkLines: 20 }).handler(
+      noKey,
+      { tool: 'Bash', command: 'x' },
+      async () => bashResult(output),
+    )) as { result: { stdout: string } };
+    expect(reads).toEqual(['/home/u/.config/jev-kit/env']);
+    expect(calls.fetches).toBe(1);
+    expect(out.result.stdout).toContain('omitted Bash output');
   });
 });

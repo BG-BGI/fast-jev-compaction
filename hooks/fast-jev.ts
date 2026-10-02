@@ -94,13 +94,33 @@ export function decisionLog(result: ResultCompaction): string {
     .join(' ');
 }
 
-async function getApiKey(
-  $: {
-    env: { get: (name: string) => Promise<string | undefined> };
-    settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
-  },
-  config: HookConfig,
-): Promise<string | undefined> {
+const KIT_ENV_PATH = '.config/jev-kit/env';
+const KEY_LINE = /^\s*(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*?)\s*$/m;
+
+/** The key from jev-kit's own `~/.config/jev-kit/env` file, quotes stripped. */
+export function keyFromEnvFile(text: string): string | undefined {
+  const raw = KEY_LINE.exec(text)?.[1]?.replace(/^(["'])(.*)\1$/, '$2');
+  return raw ? raw : undefined;
+}
+
+type KeyLookup = {
+  env: { get: (name: string) => Promise<string | undefined> };
+  settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
+  fs: { read: (path: string) => Promise<unknown> };
+};
+
+async function keyFromKitFile($: KeyLookup): Promise<string | undefined> {
+  const home = await $.env.get('HOME');
+  if (!home) return undefined;
+  try {
+    const text = await $.fs.read(`${home}/${KIT_ENV_PATH}`);
+    return typeof text === 'string' ? keyFromEnvFile(text) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getApiKey($: KeyLookup, config: HookConfig): Promise<string | undefined> {
   if (config.apiKey) return config.apiKey;
   const fromEnv = await $.env.get('TYPESAFE_API_KEY');
   if (fromEnv) return fromEnv;
@@ -110,7 +130,7 @@ async function getApiKey(
     const value = (env as Record<string, unknown>)['TYPESAFE_API_KEY'];
     if (typeof value === 'string' && value) return value;
   }
-  return undefined;
+  return keyFromKitFile($);
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
