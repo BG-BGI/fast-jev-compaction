@@ -17,6 +17,8 @@ export interface ResultOptions {
   maxStateTokens?: number;
   /** The rewrite is discarded when it saves less than this share of characters. Default 0.25. */
   minReductionRatio?: number;
+  /** Keep the output's line count: every omitted line becomes a placeholder (for numbered `Read` output). */
+  keepLineCount?: boolean;
 }
 
 export interface ResolvedResultOptions {
@@ -27,6 +29,7 @@ export interface ResolvedResultOptions {
   maxChunks: number;
   maxStateTokens: number;
   minReductionRatio: number;
+  keepLineCount: boolean;
 }
 
 export interface ResultSource {
@@ -61,6 +64,7 @@ export const DEFAULT_RESULT_OPTIONS: ResolvedResultOptions = {
   maxChunks: 40,
   maxStateTokens: 20_000,
   minReductionRatio: 0.25,
+  keepLineCount: false,
 };
 
 export const RESULT_CONTEXT =
@@ -85,6 +89,7 @@ export function resolveResultOptions(options: ResultOptions = {}): ResolvedResul
     maxChunks: Math.max(2, Math.floor(finite(options.maxChunks, defaults.maxChunks))),
     maxStateTokens: Math.max(1, finite(options.maxStateTokens, defaults.maxStateTokens)),
     minReductionRatio: finite(options.minReductionRatio, defaults.minReductionRatio),
+    keepLineCount: options.keepLineCount ?? defaults.keepLineCount,
   };
 }
 
@@ -171,16 +176,24 @@ function omissionNote(first: number, last: number, tool: string): string {
   }); re-run with a narrower command if needed]`;
 }
 
+const LINE_PLACEHOLDER = '[…]';
+
 export function applyChunkDecisions(
   chunks: readonly string[][],
   decisions: readonly ChunkDecision[],
   tool: string,
+  keepLineCount = false,
 ): string {
   const out: string[] = [];
   let line = 1;
   let skipped: { first: number; last: number } | undefined;
   const flush = (): void => {
-    if (skipped) out.push(omissionNote(skipped.first, skipped.last, tool));
+    if (skipped) {
+      out.push(omissionNote(skipped.first, skipped.last, tool));
+      if (keepLineCount) {
+        for (let n = skipped.first + 1; n <= skipped.last; n += 1) out.push(LINE_PLACEHOLDER);
+      }
+    }
     skipped = undefined;
   };
   chunks.forEach((chunk, index) => {
@@ -259,7 +272,7 @@ export async function compactToolResult(
     return decision;
   });
   const omittedChunks = decisions.filter((decision) => !decision.kept).length;
-  const compacted = applyChunkDecisions(chunks, decisions, source.tool);
+  const compacted = applyChunkDecisions(chunks, decisions, source.tool, resolved.keepLineCount);
   const reduction = (text.length - compacted.length) / text.length;
   if (omittedChunks === 0 || reduction < resolved.minReductionRatio) {
     return { ...unchanged(text, chunks.length), decisions };

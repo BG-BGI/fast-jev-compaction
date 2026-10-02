@@ -58,10 +58,10 @@ type Handler = (
   next: (event: Record<string, unknown>) => Promise<unknown>,
 ) => Promise<unknown>;
 
-function registered(options: Record<string, unknown> = {}): { matcher: unknown; handler: Handler } {
-  let captured: { matcher: unknown; handler: Handler } | undefined;
-  const on = (name: string, matcher: unknown, handler: Handler): void => {
-    if (name === 'tool.call') captured = { matcher, handler };
+function registered(options: Record<string, unknown> = {}): { handler: Handler } {
+  let captured: { handler: Handler } | undefined;
+  const on = (name: string, ...rest: unknown[]): void => {
+    if (name === 'tool.call') captured = { handler: rest[rest.length - 1] as Handler };
   };
   (register as unknown as (on: unknown, options: unknown) => void)(on, options);
   if (!captured) throw new Error('no tool.call hook registered');
@@ -92,8 +92,64 @@ const bashResult = (stdout: string, extra: Record<string, unknown> = {}) => ({
 });
 
 describe('tool.call hook', () => {
-  it('hooks Bash only', () => {
-    expect(registered().matcher).toEqual({ tool: 'Bash' });
+  it('passes tools it does not handle through without asking Jev', async () => {
+    const calls = { fetches: 0 };
+    const ran = { ref: 1, text: output, result: { content: output } };
+    const out = await registered().handler(
+      engine(() => 0, [], calls),
+      { tool: 'WebFetch', url: 'x' },
+      async () => ran,
+    );
+    expect(out).toBe(ran);
+    expect(calls.fetches).toBe(0);
+  });
+
+  it('keeps an MCP result in its own shape, text blocks and strings alike', async () => {
+    const answer = (n: string) => (n === 'chunk_2' ? 0.9 : 0.1);
+    const block = { type: 'text', text: output };
+    const image = { type: 'image', data: 'abc' };
+    const asBlocks = (await registered({ chunkLines: 20 }).handler(
+      engine(answer, [], { fetches: 0 }),
+      { tool: 'mcp__srv__list', q: 1 },
+      async () => ({ result: { content: [block, image], isError: false } }),
+    )) as { result: { content: Record<string, unknown>[]; isError: boolean } };
+    expect(asBlocks.result.isError).toBe(false);
+    expect(asBlocks.result.content[1]).toBe(image);
+    expect(asBlocks.result.content[0]?.['type']).toBe('text');
+    expect(asBlocks.result.content[0]?.['text']).toContain('omitted mcp__srv__list output');
+    const asString = (await registered({ chunkLines: 20 }).handler(
+      engine(answer, [], { fetches: 0 }),
+      { tool: 'mcp__srv__list' },
+      async () => ({ result: output }),
+    )) as { result: string };
+    expect(typeof asString.result).toBe('string');
+    expect(asString.result.length).toBeLessThan(output.length);
+  });
+
+  it('compacts Read only when enabled, keeping the line count', async () => {
+    const read = {
+      result: {
+        type: 'text',
+        file: { filePath: '/a', content: output, numLines: 100, startLine: 1, totalLines: 100 },
+      },
+    };
+    const answer = (n: string) => (n === 'chunk_2' ? 0.9 : 0.1);
+    const off = await registered({ chunkLines: 20 }).handler(
+      engine(answer, [], { fetches: 0 }),
+      { tool: 'Read', file_path: '/a' },
+      async () => read,
+    );
+    expect(off).toBe(read);
+    const on = (await registered({ chunkLines: 20, compactRead: true }).handler(
+      engine(answer, [], { fetches: 0 }),
+      { tool: 'Read', file_path: '/a' },
+      async () => read,
+    )) as { result: { file: { content: string; startLine: number } } };
+    expect(on.result.file.startLine).toBe(1);
+    expect(on.result.file.content.split('\n')).toHaveLength(100);
+    expect(on.result.file.content.split('\n')[0]).toBe(output.split('\n')[0]);
+    expect(on.result.file.content.split('\n')[40]).toBe(output.split('\n')[40]);
+    expect(on.result.file.content).toContain('omitted Read output lines 21-40');
   });
 
   it('rewrites a long stdout and drops the engine ref so core maps the new result', async () => {
@@ -111,7 +167,7 @@ describe('tool.call hook', () => {
     expect(out.result.stderr).toBe('');
     expect(out.result.stdout).toContain('omitted Bash output lines 21-40');
     expect(out.result.stdout.length).toBeLessThan(output.length);
-    expect(logs.some((line) => line.startsWith('decisions: '))).toBe(true);
+    expect(logs.some((line) => line.startsWith('Bash decisions: '))).toBe(true);
   });
 
   it.each([
@@ -140,6 +196,6 @@ describe('tool.call hook', () => {
     };
     const out = await registered().handler(failing, { tool: 'Bash', command: 'x' }, async () => ran);
     expect(out).toBe(ran);
-    expect(logs).toEqual([expect.stringContaining('tool result passed through')]);
+    expect(logs).toEqual([expect.stringContaining('Bash result passed through')]);
   });
 });

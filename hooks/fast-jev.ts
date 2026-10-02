@@ -2,9 +2,15 @@ import type { On, PluginOptions, Register } from 'claude-code';
 
 import { redactingAsker } from '../src/redact.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
-import { compactToolResult, type ResultCompaction, type ResultOptions } from '../src/result.js';
+import {
+  compactToolResult,
+  DEFAULT_RESULT_OPTIONS,
+  type ResultCompaction,
+  type ResultOptions,
+} from '../src/result.js';
 import { goalFromMessages } from '../src/state.js';
 import type { JevAsker, Message } from '../src/types.js';
+import { mapResultText, type TextRewrite } from './result-shapes.js';
 
 export type HookFetchInit = {
   method?: string;
@@ -109,44 +115,60 @@ async function getApiKey(
 
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
+  const shapes = { read: options['compactRead'] === true };
 
-  on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
+  on('tool.call', async ($, event, next) => {
     const ran = await next(event);
     if (ran.deny !== undefined || ran.isError || ran.result === undefined) return ran;
-    const { stdout, isImage, backgroundTaskId, persistedOutputPath } = ran.result;
-    const skip = isImage || backgroundTaskId || persistedOutputPath;
-    if (skip || stdout.length < (configured.minChars ?? 0)) return ran;
-    try {
-      const apiKey = await getApiKey($, configured);
-      if (!apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-      const found =
-        event.agentId === undefined
-          ? await $.session.messages()
-          : await $.session.messages({ agentId: event.agentId });
-      const history: readonly Message[] = 'deny' in found ? [] : found;
-      const result = await compactToolResult(
-        stdout,
-        { tool: 'Bash', input: { command: event.command } },
-        jevAsker(
+    const { tool, tool_use_id: _id, agentId, ...input } = event as Record<string, unknown> & {
+      tool: string;
+      agentId?: string;
+    };
+    if (tool !== 'Bash' && tool !== 'Read' && !tool.startsWith('mcp__')) return ran;
+    let apiKey: string | undefined;
+    let goal: string | undefined;
+    let changed = false;
+    const rewrite: TextRewrite = async (text, keepLineCount) => {
+      if (text.length < (configured.minChars ?? DEFAULT_RESULT_OPTIONS.minChars)) return text;
+      try {
+        apiKey ??= await getApiKey($, configured);
+        if (!apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
+        if (goal === undefined) {
+          const found =
+            agentId === undefined
+              ? await $.session.messages()
+              : await $.session.messages({ agentId });
+          goal = goalFromMessages('deny' in found ? [] : (found as readonly Message[]));
+        }
+        const asker = jevAsker(
           async (url, init) => {
             const response = await $.http.fetch(url, init);
             return { status: response.status, ok: response.ok, text: response.text };
           },
           apiKey,
           configured.model,
-        ),
-        { goal: goalFromMessages(history), ...configured },
-      );
-      $.ui.log(`decisions: ${decisionLog(result) || '(none)'}`);
-      if (!result.changed) return ran;
-      $.ui.log(`Bash output ${summarize(result)}`);
-      const compacted = { ...ran.result, stdout: result.text };
-      return ran.context ? { result: compacted, context: ran.context } : { result: compacted };
-    } catch (error) {
-      $.ui.log(
-        `tool result passed through (${error instanceof Error ? error.message : String(error)})`,
-      );
-      return ran;
-    }
+        );
+        const result = await compactToolResult(text, { tool, input }, asker, {
+          goal,
+          ...configured,
+          keepLineCount,
+        });
+        $.ui.log(`${tool} decisions: ${decisionLog(result) || '(none)'}`);
+        if (!result.changed) return text;
+        $.ui.log(`${tool} output ${summarize(result)}`);
+        changed = true;
+        return result.text;
+      } catch (error) {
+        $.ui.log(
+          `${tool} result passed through (${error instanceof Error ? error.message : String(error)})`,
+        );
+        return text;
+      }
+    };
+    const mapped = await mapResultText(tool, ran.result, rewrite, shapes);
+    if (!changed) return ran;
+    return ran.context
+      ? { result: mapped as typeof ran.result, context: ran.context }
+      : { result: mapped as typeof ran.result };
   });
 };

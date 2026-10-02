@@ -47,6 +47,7 @@ The plugin declares these `userConfig` values in
 | `maxChunks` | `40` |
 | `minReductionRatio` | `0.25` |
 | `maxStateTokens` | `20000` |
+| `compactRead` | `false` |
 | `model` | `jev-latest` |
 
 The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
@@ -56,9 +57,10 @@ development setup. Each compacted or scored result logs a `decisions:` line
 
 ## Scope and caveat
 
-Only `Bash` is hooked. `Read` is excluded because omitted ranges would break
-its line numbering; Grep, Glob and MCP results have per-tool shapes not handled
-yet. Function hooks are early access and may change between Claude Code
+`Bash`, MCP tools and (with `compactRead`) text `Read` results are hooked; MCP
+results keep their own shape (strings and text blocks are rewritten, everything
+else is untouched). With `compactRead`, omitted `Read` lines become `[…]`
+placeholders so numbering stays correct. Other built-ins pass through. Function hooks are early access and may change between Claude Code
 releases. This mod uses the generated declarations from 2.1.287 in
 `types/claude-code.d.ts`; regenerate and review that file after a Claude Code
 upgrade.

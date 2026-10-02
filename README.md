@@ -139,7 +139,10 @@ Jev.
 ## Claude Code plugin
 
 The repository root is a Claude Code function-hook plugin. `hooks/fast-jev.ts`
-registers one hook, `tool.call` for `Bash`, instead of hooking `session.compact`:
+registers one `tool.call` hook, instead of hooking `session.compact`. It covers
+`Bash` (`stdout`), every MCP tool (`mcp__*`: string results and text blocks, other
+blocks and fields untouched) and, with the `compactRead` option, text `Read`
+results:
 
 1. `next(event)` runs the command; the hook gets the result before it is
    recorded or shown to the model.
@@ -161,8 +164,10 @@ registers one hook, `tool.call` for `Bash`, instead of hooking `session.compact`
 The library entry point is `compactToolResult(text, { tool, input }, asker, options)`
 in `src/result.ts`. Nothing is sent to Jev unredacted (see Redaction).
 
-Not covered yet: `Read` (omitted ranges would break its line numbering),
-Grep/Glob and MCP tool results (output shapes differ per tool).
+`Read` is opt-in (`compactRead`): omitted lines become `[…]` placeholders so the
+line count and numbering stay correct. Not covered: `Grep`/`Glob` (not
+tool.call-able built-ins in this build), `WebFetch` (already model-summarized)
+and other built-ins.
 
 ### Install in Claude Code
 

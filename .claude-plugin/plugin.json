@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
   "version": "0.4.0",
-  "description": "Verbatim Jev-guided compaction of Bash tool results before they enter Claude Code context.",
+  "description": "Verbatim Jev-guided compaction of Bash, MCP and (opt-in) Read tool results before they enter Claude Code context.",
   "license": "MIT",
   "userConfig": {
     "apiKey": {
@@ -51,6 +51,12 @@
       "title": "Jev model",
       "description": "TypeSafe Jev model name.",
       "default": "jev-latest"
+    },
+    "compactRead": {
+      "type": "boolean",
+      "title": "Compact Read results",
+      "description": "Also compact long Read results. Omitted lines become [...] placeholders so line numbers stay correct.",
+      "default": false
     }
   }
 }
