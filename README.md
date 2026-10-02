@@ -1,9 +1,10 @@
 # fast-jev-compaction
 
-Claude Code plugin that replaces the compaction summary with Jev decisions:
-every tool call and result is scored in one fast request, stale ones are
-dropped or truncated, everything kept stays verbatim. Also usable as an npm
-library.
+Claude Code plugin that compacts Bash tool results before they enter context:
+a `tool.call` hook scores the line ranges of each long output against your
+goal in one fast Jev request, omits the ranges that do not matter, and keeps
+everything else verbatim. The whole-transcript compactor is still available as
+an npm library.
 
 ## What and why
 
@@ -15,8 +16,8 @@ showing it the whole conversation. User and assistant text stays verbatim and
 in order.
 
 The repository is both an npm package (`src/`) and a Claude Code plugin
-(`hooks/`, `.claude-plugin/`) that uses the package to replace Claude Code's
-built-in compaction summary with the original messages.
+(`hooks/`, `.claude-plugin/`) whose `tool.call` hook uses the package to shrink
+tool results before the model reads them.
 
 ## How it works
 
@@ -137,11 +138,36 @@ Jev.
 
 ## Claude Code plugin
 
-The repository root is a Claude Code function-hook plugin: `hooks/fast-jev.ts`
-is a thin adapter that feeds `session.compact` transcripts through `src/` and
-falls back to Claude Code's built-in summary on errors or insufficient
-reduction. See [`hooks/README.md`](hooks/README.md) for configuration and the
-Claude Code 2.1.274 type reference.
+The repository root is a Claude Code function-hook plugin. `hooks/fast-jev.ts`
+registers one `tool.call` hook, instead of hooking `session.compact`. It covers
+`Bash` (`stdout`), every MCP tool (`mcp__*`: string results and text blocks, other
+blocks and fields untouched) and, with the `compactRead` option, text `Read`
+results:
+
+1. `next(event)` runs the command; the hook gets the result before it is
+   recorded or shown to the model.
+2. Outputs under `minChars` (4000), failed commands, backgrounded commands and
+   outputs the engine already persisted to disk pass through untouched.
+3. Otherwise `stdout` is cut into `chunkLines`-line ranges (widened to at most
+   `maxChunks`), sent to Jev with the user's last prompts as the goal, and each
+   middle range gets one `noul` question: does it hold something the assistant
+   needs (an error, a match, a value it will act on) that the rest does not say.
+4. Ranges below `keepThreshold` are replaced by one note
+   (`[fast-jev-compaction omitted Bash output lines 21-60 (40 lines); re-run with a narrower command if needed]`).
+   The first and last range always stay; everything kept is verbatim; `stderr`
+   is never touched.
+5. The hook returns `{ result }` with the rewritten `stdout`, so core validates
+   it against Bash's output schema and records the compacted result.
+6. If the rewrite saves less than `minReductionRatio`, Jev fails, or the key is
+   missing, the original result is returned unchanged.
+
+The library entry point is `compactToolResult(text, { tool, input }, asker, options)`
+in `src/result.ts`. Nothing is sent to Jev unredacted (see Redaction).
+
+`Read` is opt-in (`compactRead`): omitted lines become `[…]` placeholders so the
+line count and numbering stay correct. Not covered: `Grep`/`Glob` (not
+tool.call-able built-ins in this build), `WebFetch` (already model-summarized)
+and other built-ins.
 
 ### Install in Claude Code
 
@@ -152,25 +178,17 @@ opt-in flag must be set wherever Claude Code runs, e.g. in `~/.claude/settings.j
 { "env": { "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1", "TYPESAFE_API_KEY": "<your key>" } }
 ```
 
-Then add this repository as a plugin marketplace and install the plugin,
-either from the shell or as slash commands inside a session:
+Then add this repository as a plugin marketplace and install the plugin:
 
 ```sh
-claude plugin marketplace add tamaratran/fast-jev-compaction
+claude plugin marketplace add <owner>/fast-jev-compaction
 claude plugin install fast-jev-compaction@fast-jev-compaction
 ```
 
-The install prompts for the plugin options (API key, thresholds, `truncateHeadChars`,
-…); leave them at their defaults to use `TYPESAFE_API_KEY` from the environment.
-Restart Claude Code or run `/reload-plugins`. From then on `/compact` (and
-auto-compaction) goes through Jev: the toast reads
-`fast-jev-compaction: kept N/M messages, no summary (…)` when the pruned history
-replaced the built-in summary, or `fallback to built-in summary (…)` when Jev
-could not remove enough (short sessions, or when it fails).
-
-To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .`
-from the repository root. No publishing step is required; the marketplace is
-just the repo's `.claude-plugin/marketplace.json`.
+To run from a checkout without installing:
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir .` from the repository
+root. Every compacted result logs `decisions: 1-20:keep/1.00 21-40:drop/0.12 …`
+and a size summary to the transcript.
 
 ## Development
 

@@ -1,30 +1,16 @@
-import type {
-  On,
-  PluginOptions,
-  Register,
-  SessionMessage,
-  ToolResultSummary,
-  ToolUseSummary,
-  TurnCompleteInput,
-} from 'claude-code';
+import type { On, PluginOptions, Register } from 'claude-code';
 
-import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactingAsker } from '../src/redact.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
-import type {
-  CompactOptions,
-  CompactResult,
-  JevAsker,
-  Message,
-  ToolResult,
-  ToolUse,
-} from '../src/types.js';
-
-const HOOK_DEFAULTS = {
-  compactAtPercent: 60,
-  minReductionRatio: 0.25,
-  model: DEFAULT_MODEL,
-};
+import {
+  compactToolResult,
+  DEFAULT_RESULT_OPTIONS,
+  type ResultCompaction,
+  type ResultOptions,
+} from '../src/result.js';
+import { goalFromMessages } from '../src/state.js';
+import type { JevAsker, Message } from '../src/types.js';
+import { mapResultText, type TextRewrite } from './result-shapes.js';
 
 export type HookFetchInit = {
   method?: string;
@@ -41,17 +27,19 @@ export type HookFetchResponse = {
 /** The shape of `$.http.fetch`, so the hook can be driven without an engine. */
 export type HookFetch = (url: string, init?: HookFetchInit) => Promise<HookFetchResponse>;
 
-export type HookConfig = CompactOptions & {
+export type HookConfig = ResultOptions & {
   apiKey?: string;
-  compactAtPercent: number;
-  minReductionRatio: number;
   model: string;
 };
 
-function optionNumber(options: PluginOptions, key: string, fallback: number): number {
-  const value = options[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
+const NUMBER_OPTIONS = [
+  'keepThreshold',
+  'minChars',
+  'chunkLines',
+  'maxChunks',
+  'maxStateTokens',
+  'minReductionRatio',
+] as const;
 
 function optionString(options: PluginOptions, key: string): string | undefined {
   const value = options[key];
@@ -60,27 +48,12 @@ function optionString(options: PluginOptions, key: string): string | undefined {
 
 /** Reads the plugin's `userConfig` values; anything missing takes the defaults. */
 export function resolveHookConfig(options: PluginOptions): HookConfig {
-  const numbers: Partial<Omit<CompactOptions, 'goal'>> = {};
-  for (const key of [
-    'keepThreshold',
-    'preserveRecentMessages',
-    'maxStateTokens',
-    'maxRequestTokens',
-    'truncateHeadChars',
-  ] as const) {
+  const numbers: ResultOptions = {};
+  for (const key of NUMBER_OPTIONS) {
     const value = options[key];
     if (typeof value === 'number' && Number.isFinite(value)) numbers[key] = value;
   }
-  const config: HookConfig = {
-    ...numbers,
-    compactAtPercent: optionNumber(options, 'compactAtPercent', HOOK_DEFAULTS.compactAtPercent),
-    minReductionRatio: optionNumber(
-      options,
-      'minReductionRatio',
-      HOOK_DEFAULTS.minReductionRatio,
-    ),
-    model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
-  };
+  const config: HookConfig = { ...numbers, model: optionString(options, 'model') ?? DEFAULT_MODEL };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
   const goal = optionString(options, 'goal');
@@ -103,135 +76,51 @@ export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): Jev
   });
 }
 
-function toolUseSummary(tool: ToolUse): ToolUseSummary {
-  const summary: ToolUseSummary = {
-    tool_use_id: tool.tool_use_id,
-    tool: tool.tool,
-    input: tool.input,
-  };
-  if (tool.text !== undefined) summary.text = tool.text;
-  if (tool.isError) summary.isError = true;
-  return summary;
-}
-
-function toolResultSummary(result: ToolResult): ToolResultSummary {
-  return {
-    tool_use_id: result.tool_use_id,
-    text: result.text,
-    isError: result.isError ?? false,
-  };
-}
-
-/**
- * Maps the library's output back onto session messages. Whatever came back
- * unchanged (a message, a tool use, a tool result) is the engine's own object,
- * handle included; anything rebuilt is a fresh message without a handle, so the
- * engine takes the edited content instead of its original.
- */
-export function toSessionMessages(
-  input: readonly SessionMessage[],
-  output: readonly Message[],
-): SessionMessage[] {
-  const messages = new Map<Message, SessionMessage>();
-  const uses = new Map<ToolUse, ToolUseSummary>();
-  const results = new Map<ToolResult, ToolResultSummary>();
-  for (const message of input) {
-    messages.set(message, message);
-    for (const tool of message.toolUses) uses.set(tool, tool);
-    for (const result of message.toolResults ?? []) results.set(result, result);
-  }
-  return output.map((message) => {
-    const own = messages.get(message);
-    if (own) return own;
-    const rebuilt: SessionMessage = {
-      role: message.role,
-      text: message.text,
-      toolUses: message.toolUses.map((tool) => uses.get(tool) ?? toolUseSummary(tool)),
-    };
-    if (message.toolResults && message.toolResults.length > 0) {
-      rebuilt.toolResults = message.toolResults.map(
-        (result) => results.get(result) ?? toolResultSummary(result),
-      );
-    }
-    return rebuilt;
-  });
-}
-
-export type SessionCompaction = {
-  result: CompactResult;
-  messages: SessionMessage[];
-};
-
-/** Runs the library over a session transcript; throws when the key is missing or Jev fails. */
-export async function compactSession(
-  messages: readonly SessionMessage[],
-  config: HookConfig,
-  fetchFn: HookFetch,
-): Promise<SessionCompaction> {
-  if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), config);
-  return { result, messages: toSessionMessages(messages, result.messages) };
-}
-
 function percent(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
 
-export function summarize(result: CompactResult): string {
-  const { stats } = result;
-  const parts = [
-    stats.kept > 0 ? `${stats.kept} kept` : '',
-    stats.resultsDropped > 0 ? `${stats.resultsDropped} results truncated` : '',
-    stats.callsDropped > 0 ? `${stats.callsDropped} call_dropped` : '',
-    stats.pinned > 0 ? `${stats.pinned} pinned` : '',
-  ].filter(Boolean);
-  return `${percent(reductionRatio(result))} reduction; ${
-    parts.join(', ') || 'no tool calls'
-  }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${stats.requests} request(s)`;
+export function summarize(result: ResultCompaction): string {
+  const saved = (result.charsBefore - result.charsAfter) / Math.max(1, result.charsBefore);
+  return `${percent(saved)} smaller (${result.charsBefore} -> ${result.charsAfter} chars); ${result.omittedChunks}/${result.chunks} chunks omitted`;
 }
 
-const UI_LOG_MAX_CHARS = 4096;
-
-export function decisionLog(result: CompactResult): string {
+export function decisionLog(result: ResultCompaction): string {
   return result.decisions
-    .filter((d) => d.reason !== 'pinned')
     .map(
       (d) =>
-        `${d.id}:${d.tool}:${d.action}/call=${d.keepCall.toFixed(2)}/result=${d.keepResult.toFixed(2)}`,
+        `${d.firstLine}-${d.lastLine}:${d.kept ? 'keep' : 'drop'}/${d.keep.toFixed(2)}`,
     )
     .join(' ');
 }
 
-export function decisionLogLines(
-  result: CompactResult,
-  maxChars: number = UI_LOG_MAX_CHARS,
-): string[] {
-  const entries = decisionLog(result).split(' ').filter(Boolean);
-  if (entries.length === 0) return ['decisions: (none)'];
-  const chunks: string[] = [];
-  let current = '';
-  for (const entry of entries) {
-    const next = current ? `${current} ${entry}` : entry;
-    if (current && next.length > maxChars - 24) {
-      chunks.push(current);
-      current = entry;
-    } else current = next;
-  }
-  chunks.push(current);
-  return chunks.map((chunk, index) =>
-    chunks.length === 1
-      ? `decisions: ${chunk}`
-      : `decisions (${index + 1}/${chunks.length}): ${chunk}`,
-  );
+const KIT_ENV_PATH = '.config/jev-kit/env';
+const KEY_LINE = /^\s*(?:export\s+)?TYPESAFE_API_KEY\s*=\s*(.*?)\s*$/m;
+
+/** The key from jev-kit's own `~/.config/jev-kit/env` file, quotes stripped. */
+export function keyFromEnvFile(text: string): string | undefined {
+  const raw = KEY_LINE.exec(text)?.[1]?.replace(/^(["'])(.*)\1$/, '$2');
+  return raw ? raw : undefined;
 }
 
-async function getApiKey(
-  $: {
-    env: { get: (name: string) => Promise<string | undefined> };
-    settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
-  },
-  config: HookConfig,
-): Promise<string | undefined> {
+type KeyLookup = {
+  env: { get: (name: string) => Promise<string | undefined> };
+  settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
+  fs: { read: (path: string) => Promise<unknown> };
+};
+
+async function keyFromKitFile($: KeyLookup): Promise<string | undefined> {
+  const home = await $.env.get('HOME');
+  if (!home) return undefined;
+  try {
+    const text = await $.fs.read(`${home}/${KIT_ENV_PATH}`);
+    return typeof text === 'string' ? keyFromEnvFile(text) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getApiKey($: KeyLookup, config: HookConfig): Promise<string | undefined> {
   if (config.apiKey) return config.apiKey;
   const fromEnv = await $.env.get('TYPESAFE_API_KEY');
   if (fromEnv) return fromEnv;
@@ -241,71 +130,65 @@ async function getApiKey(
     const value = (env as Record<string, unknown>)['TYPESAFE_API_KEY'];
     if (typeof value === 'string' && value) return value;
   }
-  return undefined;
-}
-
-function notify(
-  $: {
-    ui: {
-      log: (text: string) => void;
-      toast: (text: string, options?: { timeoutMs?: number }) => void;
-    };
-  },
-  text: string,
-): void {
-  $.ui.log(text);
-  $.ui.toast(text, { timeoutMs: 15_000 });
+  return keyFromKitFile($);
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
-  let compacting = false;
+  const shapes = { read: options['compactRead'] === true };
 
-  on('session.compact', async ($, event, next) => {
-    try {
-      const config = { ...configured, apiKey: await getApiKey($, configured) };
-      const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
-        const response = await $.http.fetch(url, init);
-        return { status: response.status, ok: response.ok, text: response.text };
-      });
-      for (const line of decisionLogLines(result)) $.ui.log(line);
-      if (reductionRatio(result) < config.minReductionRatio) {
-        notify(
-          $,
-          `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
+  on('tool.call', async ($, event, next) => {
+    const ran = await next(event);
+    if (ran.deny !== undefined || ran.isError || ran.result === undefined) return ran;
+    const { tool, tool_use_id: _id, agentId, ...input } = event as Record<string, unknown> & {
+      tool: string;
+      agentId?: string;
+    };
+    if (tool !== 'Bash' && tool !== 'Read' && !tool.startsWith('mcp__')) return ran;
+    let apiKey: string | undefined;
+    let goal: string | undefined;
+    let changed = false;
+    const rewrite: TextRewrite = async (text, keepLineCount) => {
+      if (text.length < (configured.minChars ?? DEFAULT_RESULT_OPTIONS.minChars)) return text;
+      try {
+        apiKey ??= await getApiKey($, configured);
+        if (!apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
+        if (goal === undefined) {
+          const found =
+            agentId === undefined
+              ? await $.session.messages()
+              : await $.session.messages({ agentId });
+          goal = goalFromMessages('deny' in found ? [] : (found as readonly Message[]));
+        }
+        const asker = jevAsker(
+          async (url, init) => {
+            const response = await $.http.fetch(url, init);
+            return { status: response.status, ok: response.ok, text: response.text };
+          },
+          apiKey,
+          configured.model,
         );
-        return next(event);
+        const result = await compactToolResult(text, { tool, input }, asker, {
+          goal,
+          ...configured,
+          keepLineCount,
+        });
+        $.ui.log(`${tool} decisions: ${decisionLog(result) || '(none)'}`);
+        if (!result.changed) return text;
+        $.ui.log(`${tool} output ${summarize(result)}`);
+        changed = true;
+        return result.text;
+      } catch (error) {
+        $.ui.log(
+          `${tool} result passed through (${error instanceof Error ? error.message : String(error)})`,
+        );
+        return text;
       }
-      notify(
-        $,
-        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
-      );
-      return { messages };
-    } catch (error) {
-      notify(
-        $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
-      );
-      return next(event);
-    }
-  });
-
-  on('turn.complete', async ($, event: TurnCompleteInput, next) => {
-    if (compacting) return next(event);
-    try {
-      const { context } = await $.session.usage();
-      if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
-      compacting = true;
-      await $.session.compact();
-    } catch (error) {
-      $.ui.log(
-        `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
-      );
-    } finally {
-      compacting = false;
-    }
-    return next(event);
+    };
+    const mapped = await mapResultText(tool, ran.result, rewrite, shapes);
+    if (!changed) return ran;
+    return ran.context
+      ? { result: mapped as typeof ran.result, context: ran.context }
+      : { result: mapped as typeof ran.result };
   });
 };
-
-export { resolveOptions };

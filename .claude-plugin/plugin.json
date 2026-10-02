@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.3.0",
-  "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
+  "version": "0.4.0",
+  "description": "Verbatim Jev-guided compaction of Bash, MCP and (opt-in) Read tool results before they enter Claude Code context.",
   "license": "MIT",
   "userConfig": {
     "apiKey": {
@@ -13,50 +13,50 @@
     "keepThreshold": {
       "type": "number",
       "title": "Keep threshold",
-      "description": "Minimum Jev probability that a tool call or tool result is still needed; below it the item is removed.",
+      "description": "Minimum Jev probability that a chunk of tool output is still needed; below it the chunk is omitted.",
       "default": 0.5
     },
-    "preserveRecentMessages": {
+    "minChars": {
       "type": "number",
-      "title": "Recent messages to preserve",
-      "description": "Number of newest messages pinned from compaction.",
-      "default": 6
+      "title": "Minimum output size",
+      "description": "Tool outputs shorter than this many characters are never touched.",
+      "default": 4000
     },
-    "compactAtPercent": {
+    "chunkLines": {
       "type": "number",
-      "title": "Compaction percentage",
-      "description": "Context percentage at which turn.complete requests compaction.",
-      "default": 60
+      "title": "Lines per chunk",
+      "description": "Lines scored together; widened so one output never has more than maxChunks chunks.",
+      "default": 20
+    },
+    "maxChunks": {
+      "type": "number",
+      "title": "Maximum chunks",
+      "description": "Ceiling on chunks (and Jev questions) per tool output.",
+      "default": 40
     },
     "minReductionRatio": {
       "type": "number",
       "title": "Minimum reduction ratio",
-      "description": "Minimum estimated character reduction required to replace history.",
+      "description": "Minimum share of characters a rewrite must save; otherwise the output passes through untouched.",
       "default": 0.25
     },
     "maxStateTokens": {
       "type": "number",
       "title": "Maximum Jev state tokens",
-      "description": "Estimated token budget for the conversation state sent with every Jev request.",
-      "default": 25000
-    },
-    "maxRequestTokens": {
-      "type": "number",
-      "title": "Maximum Jev request tokens",
-      "description": "Estimated token budget for state plus questions in one Jev request.",
-      "default": 30000
-    },
-    "truncateHeadChars": {
-      "type": "number",
-      "title": "Truncated tool result head",
-      "description": "Characters of a tool result kept when Jev decides its full output is no longer needed; 0 keeps only the note.",
-      "default": 300
+      "description": "Estimated token budget for the tool output sent to Jev.",
+      "default": 20000
     },
     "model": {
       "type": "string",
       "title": "Jev model",
       "description": "TypeSafe Jev model name.",
       "default": "jev-latest"
+    },
+    "compactRead": {
+      "type": "boolean",
+      "title": "Compact Read results",
+      "description": "Also compact long Read results. Omitted lines become [...] placeholders so line numbers stay correct.",
+      "default": false
     }
   }
 }

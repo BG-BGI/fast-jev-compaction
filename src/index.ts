@@ -5,3 +5,4 @@ export * from './state.js';
 export * from './compact.js';
 export * from './messages.js';
 export * from './redact.js';
+export * from './result.js';
