@@ -68,7 +68,7 @@ export const DEFAULT_RESULT_OPTIONS: ResolvedResultOptions = {
 };
 
 export const RESULT_CONTEXT =
-  'A coding assistant just ran a tool. `chunks` is the tool output cut into consecutive line ranges; a long chunk shows only its head and tail. Each question asks whether one range must stay in the assistant\'s context verbatim. A range that is not kept is replaced by a one-line note and the assistant can re-run the tool with a narrower command.';
+  'A coding assistant just ran a tool. `goal` is what the user asked for. `chunks` is the tool output cut into consecutive line ranges; a long chunk shows only its head and tail. Each question asks whether one range must stay in the assistant\'s context verbatim. When the goal asks for details, a listing, or the full output, nearly every range must stay. A range that is not kept is replaced by a one-line note and the assistant can re-run the tool with a narrower command, which costs a call.';
 
 const INPUT_CHARS = 1000;
 const CHARS_PER_TOKEN = 3;
@@ -161,7 +161,7 @@ export function chunkQuestions(
     if (index > 0 && index < chunks.length - 1) {
       questions[`chunk_${index}`] = {
         type: 'noul',
-        instructions: `Lines ${line}-${last} of this ${source.tool} output should stay in the assistant's context verbatim: they hold something it needs for the user's goal (an error or failure, a match, a value or name it will act on) that the rest of the output does not already say`,
+        instructions: `Lines ${line}-${last} of this ${source.tool} output should stay in the assistant's context verbatim, because dropping them could weaken its next answer or action for the user's request. Keep them when they hold content the request asks for (listings, details, records, fields, values), an error or failure, a match, or a name or value the assistant will use. Omit them only when they are clearly unrelated noise, boilerplate or padding. Similar-looking records are not redundant: each one counts`,
       };
     }
     line = last + 1;
