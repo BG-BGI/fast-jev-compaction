@@ -84,7 +84,7 @@ async function getApiKey($: KeyLookup, configured: string | undefined): Promise<
 
 export function registerToolCall(on: On, options: PluginOptions): void {
   const configured = resolveHookConfig(options);
-  const shapes = { read: options['compactRead'] === true };
+  const shapes = { read: options['compactRead'] !== false };
 
   on('tool.call', async ($, event, next) => {
     const ran = await next(event);

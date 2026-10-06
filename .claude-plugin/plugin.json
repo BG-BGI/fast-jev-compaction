@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.5.0",
-  "description": "Verbatim Jev-guided compaction for Claude Code: trims long Bash, MCP and (opt-in) Read results in a tool.call hook, and/or replaces the session summary in a session.compact hook.",
+  "version": "0.5.1",
+  "description": "Verbatim Jev-guided compaction for Claude Code: trims long Bash, MCP and Read results in a tool.call hook, and/or replaces the session summary in a session.compact hook.",
   "license": "MIT",
   "userConfig": {
     "mode": {
@@ -61,8 +61,8 @@
     "compactRead": {
       "type": "boolean",
       "title": "Compact Read results",
-      "description": "Also compact long Read results. Omitted lines become [...] placeholders so line numbers stay correct.",
-      "default": false
+      "description": "Also compact long Read results. Omitted lines become [...] placeholders so line numbers stay correct. Set false to disable.",
+      "default": true
     },
     "compactAtPercent": {
       "type": "number",

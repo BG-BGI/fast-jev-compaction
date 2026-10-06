@@ -158,8 +158,8 @@ The sections below describe `tool` mode.
 The repository root is a Claude Code function-hook plugin. `hooks/fast-jev.ts`
 registers one `tool.call` hook, instead of hooking `session.compact`. It covers
 `Bash` (`stdout`), every MCP tool (`mcp__*`: string results and text blocks, other
-blocks and fields untouched) and, with the `compactRead` option, text `Read`
-results:
+blocks and fields untouched) and text `Read` results (on by default; set the
+`compactRead` option to `false` to disable):
 
 1. `next(event)` runs the command; the hook gets the result before it is
    recorded or shown to the model.
@@ -181,7 +181,7 @@ results:
 The library entry point is `compactToolResult(text, { tool, input }, asker, options)`
 in `src/result.ts`. Nothing is sent to Jev unredacted (see Redaction).
 
-`Read` is opt-in (`compactRead`): omitted lines become `[…]` placeholders so the
+`Read` is on by default (disable with `compactRead: false`): omitted lines become `[…]` placeholders so the
 line count and numbering stay correct. Not covered: `Grep`/`Glob` (not
 tool.call-able built-ins in this build), `WebFetch` (already model-summarized)
 and other built-ins.
