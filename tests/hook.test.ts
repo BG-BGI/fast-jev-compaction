@@ -141,7 +141,7 @@ describe('tool.call hook', () => {
       },
     };
     const answer = (n: string) => (n === 'chunk_2' ? 0.9 : 0.1);
-    const off = await registered({ chunkLines: 20 }).handler(
+    const off = await registered({ chunkLines: 20, compactRead: false }).handler(
       engine(answer, [], { fetches: 0 }),
       { tool: 'Read', file_path: '/a' },
       async () => read,
