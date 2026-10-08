@@ -35,13 +35,28 @@ async function mapRead(result: Obj, rewrite: TextRewrite): Promise<unknown> {
   return { ...result, file: { ...file, content: await rewrite(file['content'], true) } };
 }
 
-export type ShapeOptions = { read: boolean };
+async function mapGrep(result: Obj, rewrite: TextRewrite): Promise<unknown> {
+  // Only `content` mode carries matched lines; the other modes are filename
+  // or count summaries that are already small and are not line-scored text.
+  if (result['mode'] !== 'content' || typeof result['content'] !== 'string') {
+    return result;
+  }
+  const content = await rewrite(result['content'], false);
+  if (content === result['content']) return result;
+  // Each surviving line keeps its own `file:line:` prefix, so dropping ranges
+  // loses no addressing; `numLines` must follow the rewritten text because it
+  // counts returned lines, while `totalLines` keeps counting all matches.
+  return { ...result, content, numLines: content === '' ? 0 : content.split('\n').length };
+}
+
+export type ShapeOptions = { read: boolean; grep: boolean };
 
 /**
  * Applies `rewrite` to every text a tool's result holds, keeping the result's
  * own shape so the tool's mapper still reads it: Bash `stdout`, a text `Read`'s
- * `file.content` (when enabled), and the strings or text blocks of an MCP tool
- * result. Any other tool or shape comes back as the same object.
+ * `file.content` (when enabled), a content-mode `Grep`'s `content` (when
+ * enabled), and the strings or text blocks of an MCP tool result. Any other
+ * tool or shape comes back as the same object.
  */
 export async function mapResultText(
   tool: string,
@@ -58,5 +73,6 @@ export async function mapResultText(
     return { ...result, stdout: await rewrite(result['stdout'], false) };
   }
   if (tool === 'Read' && options.read) return mapRead(result, rewrite);
+  if (tool === 'Grep' && options.grep) return mapGrep(result, rewrite);
   return result;
 }

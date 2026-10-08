@@ -159,6 +159,51 @@ describe('tool.call hook', () => {
     expect(on.result.file.content).toContain('omitted Read output lines 21-40');
   });
 
+  it('compacts a content-mode Grep only when enabled, recounting numLines', async () => {
+    const matches = Array.from(
+      { length: 100 },
+      (_, i) => `src/file${(i % 7) + 1}.ts:${i + 1}: match ${i + 1} ${'x'.repeat(40)}`,
+    ).join('\n');
+    const grep = {
+      result: { mode: 'content', numFiles: 7, filenames: [], content: matches, numLines: 100, totalLines: 100 },
+    };
+    const answer = (n: string) => (n === 'chunk_2' ? 0.9 : 0.1);
+    const off = await registered({ chunkLines: 20, compactGrep: false }).handler(
+      engine(answer, [], { fetches: 0 }),
+      { tool: 'Grep', pattern: 'match' },
+      async () => grep,
+    );
+    expect(off).toBe(grep);
+    const on = (await registered({ chunkLines: 20 }).handler(
+      engine(answer, [], { fetches: 0 }),
+      { tool: 'Grep', pattern: 'match' },
+      async () => grep,
+    )) as { result: { content: string; numLines: number; totalLines: number } };
+    expect(on.result.content).toContain('omitted Grep output lines 21-40');
+    expect(on.result.content.length).toBeLessThan(matches.length);
+    expect(on.result.numLines).toBe(on.result.content.split('\n').length);
+    expect(on.result.totalLines).toBe(100);
+    expect(on.result.content.split('\n')[0]).toBe(matches.split('\n')[0]);
+  });
+
+  it.each([
+    [
+      'a files_with_matches Grep',
+      { result: { mode: 'files_with_matches', filenames: ['a.ts'], numFiles: 1, totalFiles: 1 } },
+      { tool: 'Grep', pattern: 'x' },
+    ],
+    [
+      'a Glob result',
+      { result: { filenames: ['a.ts', 'b.ts'], durationMs: 3, numFiles: 2, totalMatches: 2, countIsComplete: true } },
+      { tool: 'Glob', pattern: '*.ts' },
+    ],
+  ])('passes %s through without asking Jev', async (_name, ran, event) => {
+    const calls = { fetches: 0 };
+    const out = await registered().handler(engine(() => 0, [], calls), event, async () => ran);
+    expect(out).toBe(ran);
+    expect(calls.fetches).toBe(0);
+  });
+
   it('rewrites a long stdout and drops the engine ref so core maps the new result', async () => {
     const logs: string[] = [];
     const calls = { fetches: 0 };

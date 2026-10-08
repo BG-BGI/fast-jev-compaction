@@ -84,7 +84,10 @@ async function getApiKey($: KeyLookup, configured: string | undefined): Promise<
 
 export function registerToolCall(on: On, options: PluginOptions): void {
   const configured = resolveHookConfig(options);
-  const shapes = { read: options['compactRead'] !== false };
+  const shapes = {
+    read: options['compactRead'] !== false,
+    grep: options['compactGrep'] !== false,
+  };
 
   on('tool.call', async ($, event, next) => {
     const ran = await next(event);
@@ -93,7 +96,9 @@ export function registerToolCall(on: On, options: PluginOptions): void {
       tool: string;
       agentId?: string;
     };
-    if (tool !== 'Bash' && tool !== 'Read' && !tool.startsWith('mcp__')) return ran;
+    if (tool !== 'Bash' && tool !== 'Read' && tool !== 'Grep' && !tool.startsWith('mcp__')) {
+      return ran;
+    }
     let apiKey: string | undefined;
     let goal: string | undefined;
     let changed = false;
