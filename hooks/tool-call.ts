@@ -1,5 +1,13 @@
 import type { On, PluginOptions } from 'claude-code';
 
+import {
+  DEFAULT_RECALL_CONFIG,
+  fetchRange,
+  RECALL_TOOL,
+  type RecallConfig,
+  type RunProcess,
+  saveRanges,
+} from '../src/recall.js';
 import { DEFAULT_MODEL } from '../src/request.js';
 import {
   compactToolResult,
@@ -16,9 +24,49 @@ import {
   type KeyLookup,
   keyFromEnvFile,
   keyFromSettings,
+  optionNumber,
   optionString,
   percent,
 } from './shared.js';
+
+const PLUGIN_NAME = 'fast-jev-compaction';
+export const RECALL_FULL_NAME = `mcp__${PLUGIN_NAME}__${RECALL_TOOL}`;
+const RECALL_DESCRIPTION =
+  'Restore text that fast-jev-compaction cut from an earlier tool result. Pass the ref from the omission note ([... recall ref=r_xxxxxxxx range=A-B ...]) and optionally range=A-B to narrow it. Stored locally for a few days; an expired ref means re-run the command.';
+const RECALL_SCHEMA = {
+  type: 'object',
+  properties: {
+    ref: { type: 'string', description: 'Ref from the omission note, like r_ab12cd34.' },
+    range: { type: 'string', description: 'Original line range to return, like 21-80.' },
+    maxChars: { type: 'number', description: 'Cap on returned characters.' },
+  },
+  required: ['ref'],
+} as const;
+
+/** Recall limits from the plugin options; `recallEnabled: false` turns the feature off. */
+export function resolveRecallConfig(
+  options: PluginOptions,
+): Omit<RecallConfig, 'airlockDir'> | undefined {
+  if (options['recallEnabled'] === false) return undefined;
+  return {
+    ttlDays: optionNumber(options, 'recallTtlDays', DEFAULT_RECALL_CONFIG.ttlDays),
+    maxMB: optionNumber(options, 'recallMaxMB', DEFAULT_RECALL_CONFIG.maxMB),
+    maxChars: optionNumber(options, 'recallMaxChars', DEFAULT_RECALL_CONFIG.maxChars),
+  };
+}
+
+const runner = ($: { process: { run: RunProcess } }): RunProcess => (argv, init) =>
+  $.process.run(argv, init);
+
+type RecallEnv = { env: { get: (name: string) => Promise<string | undefined> } };
+
+/** jev-kit's `current` release: $AIRLOCK_HOME/current, else ~/.local/share/airlock/current. */
+export async function airlockDir($: RecallEnv): Promise<string | undefined> {
+  const explicit = await $.env.get('AIRLOCK_HOME');
+  if (explicit) return `${explicit}/current`;
+  const home = await $.env.get('HOME');
+  return home ? `${home}/.local/share/airlock/current` : undefined;
+}
 
 export type HookConfig = ResultOptions & {
   apiKey?: string;
@@ -89,8 +137,43 @@ export function registerToolCall(on: On, options: PluginOptions): void {
     grep: options['compactGrep'] !== false,
   };
 
+  const recallLimits = resolveRecallConfig(options);
+
+  if (recallLimits) {
+    on('session.start', async ($, event, next) => {
+      try {
+        await $.tool.register({
+          name: RECALL_TOOL,
+          description: RECALL_DESCRIPTION,
+          inputSchema: RECALL_SCHEMA as unknown as Record<string, unknown>,
+        });
+      } catch (error) {
+        $.ui.log(`recall tool not registered (${error instanceof Error ? error.message : String(error)})`);
+      }
+      return next(event);
+    });
+
+    on('tool.call', { tool: RECALL_FULL_NAME }, async ($, event) => {
+      const dir = await airlockDir($);
+      const input = event as Record<string, unknown>;
+      const ref = typeof input['ref'] === 'string' ? input['ref'] : '';
+      const range = typeof input['range'] === 'string' ? input['range'] : undefined;
+      const maxChars = typeof input['maxChars'] === 'number' ? input['maxChars'] : undefined;
+      const got = dir
+        ? await fetchRange(
+            runner($),
+            { ...recallLimits, airlockDir: dir },
+            { ref, ...(range ? { range } : {}), ...(maxChars ? { maxChars } : {}) },
+          )
+        : { ok: false, text: 'recall store unavailable; re-run the command' };
+      $.ui.log(`recall ${ref}${range ? ` ${range}` : ''}: ${got.ok ? 'hit' : 'miss'}`);
+      return { result: got.text };
+    });
+  }
+
   on('tool.call', async ($, event, next) => {
     const ran = await next(event);
+    if (event.tool === RECALL_FULL_NAME) return ran; // never re-compact recalled text
     if (ran.deny !== undefined || ran.isError || ran.result === undefined) return ran;
     const { tool, tool_use_id: _id, agentId, ...input } = event as Record<string, unknown> & {
       tool: string;
@@ -122,14 +205,26 @@ export function registerToolCall(on: On, options: PluginOptions): void {
           apiKey,
           configured.model,
         );
+        const dir = recallLimits ? await airlockDir($) : undefined;
         const result = await compactToolResult(text, { tool, input }, asker, {
           goal,
           ...configured,
           keepLineCount,
+          ...(recallLimits && dir
+            ? {
+                saveOmitted: (ranges) =>
+                  saveRanges(
+                    runner($),
+                    { ...recallLimits, airlockDir: dir },
+                    { session: agentId ?? 'main', tool, ranges },
+                  ),
+              }
+            : {}),
         });
         $.ui.log(`${tool} decisions: ${decisionLog(result) || '(none)'}`);
         if (!result.changed) return text;
         $.ui.log(`${tool} output ${summarize(result)}`);
+        if (result.recallRef) $.ui.log(`${tool} recall ref ${result.recallRef}`);
         changed = true;
         return result.text;
       } catch (error) {

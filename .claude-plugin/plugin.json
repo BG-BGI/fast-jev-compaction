@@ -93,6 +93,30 @@
       "title": "Truncated tool result head",
       "description": "Session mode: characters of a tool result kept when Jev decides its full output is no longer needed; 0 keeps only the note.",
       "default": 300
+    },
+    "recallEnabled": {
+      "type": "boolean",
+      "title": "Recall omitted text",
+      "description": "Store text cut from tool results in jev-kit's local recall.db and register a recall tool so the model can fetch it back by ref. Needs jev-kit's airlock package installed. Set false to disable.",
+      "default": true
+    },
+    "recallTtlDays": {
+      "type": "number",
+      "title": "Recall retention (days)",
+      "description": "Stored omitted text older than this is deleted.",
+      "default": 7
+    },
+    "recallMaxMB": {
+      "type": "number",
+      "title": "Recall size cap (MB)",
+      "description": "Oldest stored refs are deleted past this size.",
+      "default": 50
+    },
+    "recallMaxChars": {
+      "type": "number",
+      "title": "Recall max characters",
+      "description": "Most characters one recall call returns.",
+      "default": 20000
     }
   }
 }
