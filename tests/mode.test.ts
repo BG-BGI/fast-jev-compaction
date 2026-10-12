@@ -20,9 +20,13 @@ describe('hook mode', () => {
     expect(resolveMode({ mode: 'both' })).toBe('both');
   });
 
-  it('registers only the tool.call hook in tool mode', () => {
-    expect(registered({})).toEqual(['tool.call']);
-    expect(registered({ mode: 'tool' })).toEqual(['tool.call']);
+  it('registers the tool.call hooks and the recall tool in tool mode', () => {
+    expect(registered({})).toEqual(['session.start', 'tool.call', 'tool.call']);
+    expect(registered({ mode: 'tool' })).toEqual(['session.start', 'tool.call', 'tool.call']);
+  });
+
+  it('registers only the compaction tool.call hook when recall is off', () => {
+    expect(registered({ recallEnabled: false })).toEqual(['tool.call']);
   });
 
   it('registers session.compact and turn.complete in session mode', () => {
@@ -30,6 +34,12 @@ describe('hook mode', () => {
   });
 
   it('registers all three hooks in both mode', () => {
-    expect(registered({ mode: 'both' }).sort()).toEqual(['session.compact', 'tool.call', 'turn.complete']);
+    expect(registered({ mode: 'both' }).sort()).toEqual([
+      'session.compact',
+      'session.start',
+      'tool.call',
+      'tool.call',
+      'turn.complete',
+    ]);
   });
 });

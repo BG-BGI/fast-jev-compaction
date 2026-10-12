@@ -19,6 +19,18 @@ export interface ResultOptions {
   minReductionRatio?: number;
   /** Keep the output's line count: every omitted line becomes a placeholder (for numbered `Read` output). */
   keepLineCount?: boolean;
+  /**
+   * Called once, only when the rewrite is kept, with the text it drops. Returns a ref the
+   * omission notes name so the model can ask for the text back. A throw or `undefined` leaves
+   * the notes as before.
+   */
+  saveOmitted?: (ranges: readonly OmittedRange[]) => Promise<string | undefined>;
+}
+
+export interface OmittedRange {
+  first: number;
+  last: number;
+  text: string;
 }
 
 export interface ResolvedResultOptions {
@@ -30,6 +42,7 @@ export interface ResolvedResultOptions {
   maxStateTokens: number;
   minReductionRatio: number;
   keepLineCount: boolean;
+  saveOmitted?: ResultOptions['saveOmitted'];
 }
 
 export interface ResultSource {
@@ -54,6 +67,8 @@ export interface ResultCompaction {
   chunks: number;
   omittedChunks: number;
   decisions: ChunkDecision[];
+  /** The ref `saveOmitted` returned; the notes in `text` name it. */
+  recallRef?: string;
 }
 
 export const DEFAULT_RESULT_OPTIONS: ResolvedResultOptions = {
@@ -90,6 +105,7 @@ export function resolveResultOptions(options: ResultOptions = {}): ResolvedResul
     maxStateTokens: Math.max(1, finite(options.maxStateTokens, defaults.maxStateTokens)),
     minReductionRatio: finite(options.minReductionRatio, defaults.minReductionRatio),
     keepLineCount: options.keepLineCount ?? defaults.keepLineCount,
+    ...(options.saveOmitted ? { saveOmitted: options.saveOmitted } : {}),
   };
 }
 
@@ -169,11 +185,41 @@ export function chunkQuestions(
   return questions;
 }
 
-function omissionNote(first: number, last: number, tool: string): string {
+function omissionNote(first: number, last: number, tool: string, ref?: string): string {
   const count = last - first + 1;
-  return `[fast-jev-compaction omitted ${tool} output lines ${first}-${last} (${count} line${
+  const head = `[fast-jev-compaction omitted ${tool} output lines ${first}-${last} (${count} line${
     count === 1 ? '' : 's'
-  }); re-run with a narrower command if needed]`;
+  })`;
+  return ref
+    ? `${head}; recall ref=${ref} range=${first}-${last} to restore, or re-run with a narrower command]`
+    : `${head}; re-run with a narrower command if needed]`;
+}
+
+/** The runs of consecutive dropped chunks, each with the lines it removed. */
+export function omittedRanges(
+  chunks: readonly string[][],
+  decisions: readonly ChunkDecision[],
+): OmittedRange[] {
+  const out: OmittedRange[] = [];
+  let line = 1;
+  let open: { first: number; last: number; lines: string[] } | undefined;
+  const close = (): void => {
+    if (open) out.push({ first: open.first, last: open.last, text: open.lines.join('\n') });
+    open = undefined;
+  };
+  chunks.forEach((chunk, index) => {
+    const last = line + chunk.length - 1;
+    if (decisions[index]?.kept) {
+      close();
+    } else {
+      open ??= { first: line, last, lines: [] };
+      open.last = last;
+      open.lines.push(...chunk);
+    }
+    line = last + 1;
+  });
+  close();
+  return out;
 }
 
 const LINE_PLACEHOLDER = '[…]';
@@ -183,13 +229,14 @@ export function applyChunkDecisions(
   decisions: readonly ChunkDecision[],
   tool: string,
   keepLineCount = false,
+  ref?: string,
 ): string {
   const out: string[] = [];
   let line = 1;
   let skipped: { first: number; last: number } | undefined;
   const flush = (): void => {
     if (skipped) {
-      out.push(omissionNote(skipped.first, skipped.last, tool));
+      out.push(omissionNote(skipped.first, skipped.last, tool, ref));
       if (keepLineCount) {
         for (let n = skipped.first + 1; n <= skipped.last; n += 1) out.push(LINE_PLACEHOLDER);
       }
@@ -277,13 +324,25 @@ export async function compactToolResult(
   if (omittedChunks === 0 || reduction < resolved.minReductionRatio) {
     return { ...unchanged(text, chunks.length), decisions };
   }
+  let recallRef: string | undefined;
+  if (resolved.saveOmitted) {
+    try {
+      recallRef = await resolved.saveOmitted(omittedRanges(chunks, decisions));
+    } catch {
+      recallRef = undefined; // fail open: notes keep the old wording
+    }
+  }
+  const final = recallRef
+    ? applyChunkDecisions(chunks, decisions, source.tool, resolved.keepLineCount, recallRef)
+    : compacted;
   return {
-    text: compacted,
+    text: final,
     changed: true,
     charsBefore: text.length,
-    charsAfter: compacted.length,
+    charsAfter: final.length,
     chunks: chunks.length,
     omittedChunks,
     decisions,
+    ...(recallRef ? { recallRef } : {}),
   };
 }
