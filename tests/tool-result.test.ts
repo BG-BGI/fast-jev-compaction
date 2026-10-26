@@ -3,9 +3,11 @@ import {
   applyChunkDecisions,
   chunkOutput,
   chunkQuestions,
+  collapseRepeatedLines,
   compactToolResult,
   resolveResultOptions,
   resultState,
+  segmentLongLines,
   type ChunkDecision,
   type JevAsker,
 } from '../src/index.js';
@@ -74,6 +76,83 @@ describe('applyChunkDecisions', () => {
       '[fast-jev-compaction omitted Bash output lines 3-5 (3 lines); re-run with a narrower command if needed]',
       'd1',
     ]);
+  });
+});
+
+describe('collapseRepeatedLines', () => {
+  it('collapses runs of 4+ identical lines into the first plus a count note', () => {
+    const input = ['a', 'b', 'b', 'b', 'b', 'b', 'c'];
+    const { lines: out, collapsed } = collapseRepeatedLines(input);
+    expect(out).toEqual([
+      'a',
+      'b',
+      '[fast-jev-compaction: previous line repeated 4 more times]',
+      'c',
+    ]);
+    expect(collapsed).toBe(4);
+  });
+
+  it('leaves short runs and blank runs alone', () => {
+    const input = ['x', 'x', 'x', '', '', '', '', 'y'];
+    expect(collapseRepeatedLines(input)).toEqual({ lines: input, collapsed: 0 });
+  });
+});
+
+describe('segmentLongLines', () => {
+  it('cuts long lines into fixed-size segments and leaves short ones alone', () => {
+    const long = 'j'.repeat(2500);
+    const { lines: out, segmented } = segmentLongLines(['short', long], 1000);
+    expect(segmented).toBe(true);
+    expect(out).toEqual(['short', 'j'.repeat(1000), 'j'.repeat(1000), 'j'.repeat(500)]);
+    expect(segmentLongLines(['short'], 1000)).toEqual({ lines: ['short'], segmented: false });
+  });
+});
+
+describe('compactToolResult preprocessing', () => {
+  it('collapse alone pays without a Jev call when too few ranges remain', async () => {
+    const spam = ['start', ...Array.from({ length: 300 }, () => 'progress tick .......'), 'done'];
+    const bodies: unknown[] = [];
+    const result = await compactToolResult(spam.join('\n'), SOURCE, asker(() => 0, bodies));
+    expect(bodies).toHaveLength(0);
+    expect(result.changed).toBe(true);
+    expect(result.text).toContain('repeated 299 more times');
+    expect(result.charsBefore).toBe(spam.join('\n').length);
+    expect(result.charsAfter).toBe(result.text.length);
+  });
+
+  it('segments a single-line dump into scoreable ranges and says segments in the note', async () => {
+    const dump = `{"rows":[${Array.from({ length: 600 }, (_, i) => `{"i":${i}}`).join(',')}]}`;
+    expect(dump.includes('\n')).toBe(false);
+    const result = await compactToolResult(dump, SOURCE, asker(() => 0), {
+      maxLineChars: 500,
+      chunkLines: 1,
+    });
+    expect(result.changed).toBe(true);
+    expect(result.text).toMatch(/omitted Bash output segments \d+-\d+ \(\d+ segments\)/);
+    expect(result.charsAfter).toBeLessThan(result.charsBefore);
+  });
+
+  it('keepLineCount skips both pre-passes so Read numbering survives', async () => {
+    const spam = [
+      ...Array.from({ length: 50 }, (_, i) => `head ${i} ${'x'.repeat(40)}`),
+      ...Array.from({ length: 200 }, () => 'same line of padding text'),
+      'z'.repeat(5000),
+    ];
+    const result = await compactToolResult(spam.join('\n'), SOURCE, asker(() => 0.9), {
+      keepLineCount: true,
+    });
+    expect(result.changed).toBe(false);
+    expect(result.text).toBe(spam.join('\n'));
+  });
+
+  it('collapseRepeats false leaves repeat runs for Jev to judge', async () => {
+    const spam = ['start', ...Array.from({ length: 300 }, () => 'progress tick .......'), 'done'];
+    const bodies: unknown[] = [];
+    const result = await compactToolResult(spam.join('\n'), SOURCE, asker(() => 0.9, bodies), {
+      collapseRepeats: false,
+    });
+    expect(bodies).toHaveLength(1);
+    expect(result.changed).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Verbatim Jev-guided compaction for Claude Code: trims long Bash, MCP and Read results in a tool.call hook, and/or replaces the session summary in a session.compact hook.",
   "license": "MIT",
   "userConfig": {

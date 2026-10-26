@@ -20,6 +20,18 @@ export interface ResultOptions {
   /** Keep the output's line count: every omitted line becomes a placeholder (for numbered `Read` output). */
   keepLineCount?: boolean;
   /**
+   * Collapse runs of 4+ identical consecutive lines into the first line plus a count note
+   * before any scoring: lossless in content, free of Jev cost. Default true. Skipped under
+   * `keepLineCount`, whose numbering must survive.
+   */
+  collapseRepeats?: boolean;
+  /**
+   * A line longer than this is cut into segments of this many characters so a single-line
+   * dump (minified JSON, say) becomes scoreable ranges; omission notes then say "segments"
+   * instead of "lines". 0 turns it off. Default 2000. Skipped under `keepLineCount`.
+   */
+  maxLineChars?: number;
+  /**
    * Called once, only when the rewrite is kept, with the text it drops. Returns a ref the
    * omission notes name so the model can ask for the text back. A throw or `undefined` leaves
    * the notes as before.
@@ -42,8 +54,13 @@ export interface ResolvedResultOptions {
   maxStateTokens: number;
   minReductionRatio: number;
   keepLineCount: boolean;
+  collapseRepeats: boolean;
+  maxLineChars: number;
   saveOmitted?: ResultOptions['saveOmitted'];
 }
+
+/** What one range of output is called in notes and questions. */
+export type RangeUnit = 'lines' | 'segments';
 
 export interface ResultSource {
   tool: string;
@@ -80,7 +97,11 @@ export const DEFAULT_RESULT_OPTIONS: ResolvedResultOptions = {
   maxStateTokens: 20_000,
   minReductionRatio: 0.25,
   keepLineCount: false,
+  collapseRepeats: true,
+  maxLineChars: 2000,
 };
+
+const MIN_REPEAT_RUN = 4;
 
 export const RESULT_CONTEXT =
   'A coding assistant just ran a tool. `goal` is what the user asked for. `chunks` is the tool output cut into consecutive line ranges; a long chunk shows only its head and tail. Each question asks whether one range must stay in the assistant\'s context verbatim. When the goal asks for details, a listing, or the full output, nearly every range must stay. A range that is not kept is replaced by a one-line note and the assistant can re-run the tool with a narrower command, which costs a call.';
@@ -105,8 +126,62 @@ export function resolveResultOptions(options: ResultOptions = {}): ResolvedResul
     maxStateTokens: Math.max(1, finite(options.maxStateTokens, defaults.maxStateTokens)),
     minReductionRatio: finite(options.minReductionRatio, defaults.minReductionRatio),
     keepLineCount: options.keepLineCount ?? defaults.keepLineCount,
+    collapseRepeats: options.collapseRepeats ?? defaults.collapseRepeats,
+    maxLineChars: Math.max(0, finite(options.maxLineChars, defaults.maxLineChars)),
     ...(options.saveOmitted ? { saveOmitted: options.saveOmitted } : {}),
   };
+}
+
+/**
+ * Runs of `MIN_REPEAT_RUN`+ identical consecutive non-blank lines become the
+ * first line plus a visible count note. Nothing is judged and nothing is lost:
+ * the count note carries what was removed.
+ */
+export function collapseRepeatedLines(
+  lines: readonly string[],
+  minRun = MIN_REPEAT_RUN,
+): { lines: string[]; collapsed: number } {
+  const out: string[] = [];
+  let collapsed = 0;
+  let at = 0;
+  while (at < lines.length) {
+    const line = lines[at] as string;
+    let end = at + 1;
+    while (end < lines.length && lines[end] === line) end += 1;
+    const run = end - at;
+    if (run >= minRun && line.trim() !== '') {
+      out.push(line, `[fast-jev-compaction: previous line repeated ${run - 1} more times]`);
+      collapsed += run - 1;
+    } else {
+      for (let i = at; i < end; i += 1) out.push(lines[i] as string);
+    }
+    at = end;
+  }
+  return { lines: out, collapsed };
+}
+
+/**
+ * Cuts every line longer than `maxLineChars` into segments of that many
+ * characters, so a single-line dump becomes ranges Jev can score. The cuts
+ * insert line breaks, which the "segments" wording in the notes flags.
+ */
+export function segmentLongLines(
+  lines: readonly string[],
+  maxLineChars: number,
+): { lines: string[]; segmented: boolean } {
+  const out: string[] = [];
+  let segmented = false;
+  for (const line of lines) {
+    if (line.length <= maxLineChars) {
+      out.push(line);
+      continue;
+    }
+    segmented = true;
+    for (let at = 0; at < line.length; at += maxLineChars) {
+      out.push(line.slice(at, at + maxLineChars));
+    }
+  }
+  return { lines: out, segmented };
 }
 
 /** Consecutive line ranges, each `size` lines wide, with `size` widened to stay within `maxChunks`. */
@@ -169,15 +244,17 @@ export function resultState(
 export function chunkQuestions(
   source: ResultSource,
   chunks: readonly string[][],
+  unit: RangeUnit = 'lines',
 ): JevQuestions {
   const questions: JevQuestions = {};
+  const noun = unit === 'lines' ? 'Lines' : 'Segments';
   let line = 1;
   chunks.forEach((chunk, index) => {
     const last = line + chunk.length - 1;
     if (index > 0 && index < chunks.length - 1) {
       questions[`chunk_${index}`] = {
         type: 'noul',
-        instructions: `Lines ${line}-${last} of this ${source.tool} output should stay in the assistant's context verbatim, because dropping them could weaken its next answer or action for the user's request. Keep them when they hold content the request asks for (listings, details, records, fields, values), an error or failure, a match, or a name or value the assistant will use. Omit them only when they are clearly unrelated noise, boilerplate or padding. Similar-looking records are not redundant: each one counts`,
+        instructions: `${noun} ${line}-${last} of this ${source.tool} output should stay in the assistant's context verbatim, because dropping them could weaken its next answer or action for the user's request. Keep them when they hold content the request asks for (listings, details, records, fields, values), an error or failure, a match, or a name or value the assistant will use. Omit them only when they are clearly unrelated noise, boilerplate or padding. Similar-looking records are not redundant: each one counts`,
       };
     }
     line = last + 1;
@@ -185,11 +262,17 @@ export function chunkQuestions(
   return questions;
 }
 
-function omissionNote(first: number, last: number, tool: string, ref?: string): string {
+function omissionNote(
+  first: number,
+  last: number,
+  tool: string,
+  ref?: string,
+  unit: RangeUnit = 'lines',
+): string {
   const count = last - first + 1;
-  const head = `[fast-jev-compaction omitted ${tool} output lines ${first}-${last} (${count} line${
-    count === 1 ? '' : 's'
-  })`;
+  const head = `[fast-jev-compaction omitted ${tool} output ${unit} ${first}-${last} (${count} ${
+    unit === 'lines' ? 'line' : 'segment'
+  }${count === 1 ? '' : 's'})`;
   return ref
     ? `${head}; recall ref=${ref} range=${first}-${last} to restore, or re-run with a narrower command]`
     : `${head}; re-run with a narrower command if needed]`;
@@ -230,13 +313,14 @@ export function applyChunkDecisions(
   tool: string,
   keepLineCount = false,
   ref?: string,
+  unit: RangeUnit = 'lines',
 ): string {
   const out: string[] = [];
   let line = 1;
   let skipped: { first: number; last: number } | undefined;
   const flush = (): void => {
     if (skipped) {
-      out.push(omissionNote(skipped.first, skipped.last, tool, ref));
+      out.push(omissionNote(skipped.first, skipped.last, tool, ref, unit));
       if (keepLineCount) {
         for (let n = skipped.first + 1; n <= skipped.last; n += 1) out.push(LINE_PLACEHOLDER);
       }
@@ -300,14 +384,49 @@ export async function compactToolResult(
 ): Promise<ResultCompaction> {
   const resolved = resolveResultOptions(options);
   if (text.length < resolved.minChars) return unchanged(text, 0);
-  const chunks = chunkOutput(text.split('\n'), resolved.chunkLines, resolved.maxChunks);
-  if (chunks.length < 3) return unchanged(text, chunks.length);
+  // Two free pre-passes, both skipped under keepLineCount, whose numbering
+  // must match the original: collapse exact-repeat runs (lossless, the note
+  // carries the count), then segment over-long lines so a one-line dump
+  // becomes ranges Jev can score at all.
+  let lines = text.split('\n');
+  let collapsed = 0;
+  let unit: RangeUnit = 'lines';
+  if (!resolved.keepLineCount && resolved.collapseRepeats) {
+    const squeezed = collapseRepeatedLines(lines);
+    lines = squeezed.lines;
+    collapsed = squeezed.collapsed;
+  }
+  if (!resolved.keepLineCount && resolved.maxLineChars > 0) {
+    const cut = segmentLongLines(lines, resolved.maxLineChars);
+    if (cut.segmented) {
+      lines = cut.lines;
+      unit = 'segments';
+    }
+  }
+  const chunks = chunkOutput(lines, resolved.chunkLines, resolved.maxChunks);
+  if (chunks.length < 3) {
+    // Too few ranges for Jev, but the collapse alone may already pay.
+    const squeezedText = lines.join('\n');
+    const squeezedReduction = (text.length - squeezedText.length) / text.length;
+    if (collapsed > 0 && squeezedReduction >= resolved.minReductionRatio) {
+      return {
+        text: squeezedText,
+        changed: true,
+        charsBefore: text.length,
+        charsAfter: squeezedText.length,
+        chunks: chunks.length,
+        omittedChunks: 0,
+        decisions: [],
+      };
+    }
+    return unchanged(text, chunks.length);
+  }
 
   const state = resultState(source, chunks, resolved);
   if (estimateTokens(JSON.stringify(state)) > resolved.maxStateTokens) {
     throw new Error('tool output leaves no room under maxStateTokens');
   }
-  const { answers } = await asker.ask(state, chunkQuestions(source, chunks));
+  const { answers } = await asker.ask(state, chunkQuestions(source, chunks, unit));
 
   let line = 1;
   const decisions = chunks.map((chunk, index) => {
@@ -319,13 +438,20 @@ export async function compactToolResult(
     return decision;
   });
   const omittedChunks = decisions.filter((decision) => !decision.kept).length;
-  const compacted = applyChunkDecisions(chunks, decisions, source.tool, resolved.keepLineCount);
+  const compacted = applyChunkDecisions(
+    chunks,
+    decisions,
+    source.tool,
+    resolved.keepLineCount,
+    undefined,
+    unit,
+  );
   const reduction = (text.length - compacted.length) / text.length;
-  if (omittedChunks === 0 || reduction < resolved.minReductionRatio) {
+  if ((omittedChunks === 0 && collapsed === 0) || reduction < resolved.minReductionRatio) {
     return { ...unchanged(text, chunks.length), decisions };
   }
   let recallRef: string | undefined;
-  if (resolved.saveOmitted) {
+  if (resolved.saveOmitted && omittedChunks > 0) {
     try {
       recallRef = await resolved.saveOmitted(omittedRanges(chunks, decisions));
     } catch {
@@ -333,7 +459,7 @@ export async function compactToolResult(
     }
   }
   const final = recallRef
-    ? applyChunkDecisions(chunks, decisions, source.tool, resolved.keepLineCount, recallRef)
+    ? applyChunkDecisions(chunks, decisions, source.tool, resolved.keepLineCount, recallRef, unit)
     : compacted;
   return {
     text: final,

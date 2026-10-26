@@ -80,6 +80,7 @@ const NUMBER_OPTIONS = [
   'maxChunks',
   'maxStateTokens',
   'minReductionRatio',
+  'maxLineChars',
 ] as const;
 
 /** Reads the plugin's `userConfig` values; anything missing takes the defaults. */
@@ -90,6 +91,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     if (typeof value === 'number' && Number.isFinite(value)) numbers[key] = value;
   }
   const config: HookConfig = { ...numbers, model: optionString(options, 'model') ?? DEFAULT_MODEL };
+  if (options['collapseRepeats'] === false) config.collapseRepeats = false;
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
   const goal = optionString(options, 'goal');
