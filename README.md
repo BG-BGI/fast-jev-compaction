@@ -111,6 +111,8 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `300` | Characters of a dropped tool result retained before its note |
+| `collapseRepeats` | `true` | Collapse runs of 4+ identical lines into one plus a count note before scoring (tool mode; skipped for numbered `Read` output) |
+| `maxLineChars` | `2000` | Cut lines longer than this into segments so a single-line dump becomes scoreable ranges; notes then say "segments". `0` disables (tool mode; skipped for numbered `Read` output) |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
